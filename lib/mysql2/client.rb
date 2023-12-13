@@ -44,6 +44,9 @@ module Mysql2
       ssl_options = opts.values_at(:sslkey, :sslcert, :sslca, :sslcapath, :sslcipher)
       ssl_set(*ssl_options) if ssl_options.any?
 
+      # HARDCODED SSL MODE DISABLE
+      self.ssl_mode = Mysql2::Client.const_get('SSL_MODE_DISABLED')
+
       if [:user,:pass,:hostname,:dbname,:db,:sock].any?{|k| @query_options.has_key?(k) }
         warn "============= WARNING FROM mysql2 ============="
         warn "The options :user, :pass, :hostname, :dbname, :db, and :sock will be deprecated at some point in the future."

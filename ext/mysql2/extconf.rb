@@ -11,6 +11,22 @@ def asplode lib
   end
 end
 
+# BACKPORTED FROM GEM VERSION 0.5.3
+def add_ssl_defines(header)
+  all_modes_found = %w[SSL_MODE_DISABLED SSL_MODE_PREFERRED SSL_MODE_REQUIRED SSL_MODE_VERIFY_CA SSL_MODE_VERIFY_IDENTITY].inject(true) do |m, ssl_mode|
+    m && have_const(ssl_mode, header)
+  end
+  if all_modes_found
+    $CFLAGS << ' -DFULL_SSL_MODE_SUPPORT'
+  else
+    # if we only have ssl toggle (--ssl,--disable-ssl) from 5.7.3 to 5.7.10
+    # and the verify server cert option. This is also the case for MariaDB.
+    has_verify_support  = have_const('MYSQL_OPT_SSL_VERIFY_SERVER_CERT', header)
+    has_enforce_support = have_const('MYSQL_OPT_SSL_ENFORCE', header)
+    $CFLAGS << ' -DNO_SSL_MODE_SUPPORT' if !has_verify_support && !has_enforce_support
+  end
+end
+
 # 2.0-only
 have_header('ruby/thread.h') && have_func('rb_thread_call_without_gvl', 'ruby/thread.h')
 
@@ -19,6 +35,30 @@ have_func('rb_thread_blocking_region')
 have_func('rb_wait_for_single_fd')
 have_func('rb_hash_dup')
 have_func('rb_intern3')
+
+# BACKPORTED FROM GEM VERSION 0.5.3
+### Find OpenSSL library
+
+# User-specified OpenSSL if explicitly specified
+if with_config('openssl-dir')
+  _, lib = dir_config('openssl')
+  if lib
+    # Ruby versions below 2.0 on Unix and below 2.1 on Windows
+    # do not properly search for lib directories, and must be corrected:
+    # https://bugs.ruby-lang.org/projects/ruby-trunk/repository/revisions/39717
+    unless lib && lib[-3, 3] == 'lib'
+      @libdir_basename = 'lib'
+      _, lib = dir_config('openssl')
+    end
+    abort "-----\nCannot find library dir(s) #{lib}\n-----" unless lib && lib.split(File::PATH_SEPARATOR).any? { |dir| File.directory?(dir) }
+    warn "-----\nUsing --with-openssl-dir=#{File.dirname lib}\n-----"
+    $LDFLAGS << " -L#{lib}"
+  end
+  # Homebrew OpenSSL on MacOS
+elsif RUBY_PLATFORM =~ /darwin/ && system('command -v brew')
+  openssl_location = `brew --prefix openssl`.strip
+  $LDFLAGS << " -L#{openssl_location}/lib" if openssl_location
+end
 
 # borrowed from mysqlplus
 # http://github.com/oldmoe/mysqlplus/blob/master/ext/extconf.rb
@@ -103,6 +143,10 @@ end
   header = [prefix, h].compact.join '/'
   asplode h unless have_header h
 end
+
+# BACKPORTED FROM GEM VERSION 0.5.3
+mysql_h = [prefix, 'mysql.h'].compact.join('/')
+add_ssl_defines(mysql_h)
 
 # These gcc style flags are also supported by clang and xcode compilers,
 # so we'll use a does-it-work test instead of an is-it-gcc test.

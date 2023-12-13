@@ -61,6 +61,21 @@ static VALUE rb_hash_dup(VALUE other) {
 #endif
 
 /*
+ * BACKPORTED FROM GEM VERSION 0.5.3
+ * compatibility with mysql-connector-c 6.1.x, MySQL 5.7.3 - 5.7.10 & with MariaDB 10.x and later.
+ */
+#ifdef HAVE_CONST_MYSQL_OPT_SSL_VERIFY_SERVER_CERT
+  #define SSL_MODE_VERIFY_IDENTITY 5
+  #define HAVE_CONST_SSL_MODE_VERIFY_IDENTITY
+#endif
+#ifdef HAVE_CONST_MYSQL_OPT_SSL_ENFORCE
+  #define SSL_MODE_DISABLED 1
+  #define SSL_MODE_REQUIRED 3
+  #define HAVE_CONST_SSL_MODE_DISABLED
+  #define HAVE_CONST_SSL_MODE_REQUIRED
+#endif
+
+/*
  * used to pass all arguments to mysql_real_connect while inside
  * rb_thread_call_without_gvl
  */
@@ -117,6 +132,51 @@ struct nogvl_select_db_args {
  * - mysql_real_escape_string()
  * - mysql_ssl_set()
  */
+
+
+/*
+ * BACKPORTED FROM GEM VERSION 0.5.3
+ */
+  static VALUE rb_set_ssl_mode_option(VALUE self, VALUE setting) {
+   unsigned long version = mysql_get_client_version();
+
+   if (version < 50703) {
+     rb_warn( "Your mysql client library does not support setting ssl_mode; full support comes with 5.7.11." );
+     return Qnil;
+   }
+ #ifdef HAVE_CONST_MYSQL_OPT_SSL_ENFORCE
+   GET_CLIENT(self);
+   int val = NUM2INT( setting );
+   // Either MySQL 5.7.3 - 5.7.10, or Connector/C 6.1.3 - 6.1.x
+   if ((version >= 50703 && version < 50711) || (version >= 60103 && version < 60200)) {
+     if (val == SSL_MODE_DISABLED || val == SSL_MODE_REQUIRED) {
+       my_bool b = ( val == SSL_MODE_REQUIRED );
+       int result = mysql_options( wrapper->client, MYSQL_OPT_SSL_ENFORCE, &b );
+       return INT2NUM(result);
+     } else {
+       rb_warn( "MySQL client libraries between 5.7.3 and 5.7.10 only support SSL_MODE_DISABLED and SSL_MODE_REQUIRED" );
+       return Qnil;
+     }
+   } else {
+     rb_warn( "Your mysql client library does not support ssl_mode as expected." );
+     return Qnil;
+   }
+ #endif
+ #ifdef FULL_SSL_MODE_SUPPORT
+   GET_CLIENT(self);
+   int val = NUM2INT( setting );
+
+   if (val != SSL_MODE_DISABLED && val != SSL_MODE_PREFERRED && val != SSL_MODE_REQUIRED && val != SSL_MODE_VERIFY_CA && val != SSL_MODE_VERIFY_IDENTITY) {
+     rb_raise(cMysql2Error, "ssl_mode= takes DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY, you passed: %d", val );
+   }
+   int result = mysql_options( wrapper->client, MYSQL_OPT_SSL_MODE, &val );
+
+   return INT2NUM(result);
+ #endif
+ #ifdef NO_SSL_MODE_SUPPORT
+   return Qnil;
+ #endif
+ }
 
 static void rb_mysql_client_mark(void * wrapper) {
   mysql_client_wrapper * w = wrapper;
@@ -1290,6 +1350,8 @@ void init_mysql2_client() {
   rb_define_private_method(cMysql2Client, "default_group=", set_read_default_group, 1);
   rb_define_private_method(cMysql2Client, "init_command=", set_init_command, 1);
   rb_define_private_method(cMysql2Client, "ssl_set", set_ssl_options, 5);
+  /* BACKPORTED FROM GEM VERSION 0.5.3 */
+  rb_define_private_method(cMysql2Client, "ssl_mode=", rb_set_ssl_mode_option, 1);
   rb_define_private_method(cMysql2Client, "initialize_ext", initialize_ext, 0);
   rb_define_private_method(cMysql2Client, "connect", rb_connect, 7);
 
@@ -1415,5 +1477,41 @@ void init_mysql2_client() {
 #ifdef CLIENT_BASIC_FLAGS
   rb_const_set(cMysql2Client, rb_intern("BASIC_FLAGS"),
       LONG2NUM(CLIENT_BASIC_FLAGS));
+#endif
+
+/*
+ * BACKPORTED FROM GEM VERSION 0.5.3
+ * compatibility with mysql-connector-c 6.1.x, MySQL 5.7.3 - 5.7.10 & with MariaDB 10.x and later.
+ */
+#if defined(FULL_SSL_MODE_SUPPORT) // MySQL 5.6.36 and MySQL 5.7.11 and above
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_DISABLED"), INT2NUM(SSL_MODE_DISABLED));
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_PREFERRED"), INT2NUM(SSL_MODE_PREFERRED));
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_REQUIRED"), INT2NUM(SSL_MODE_REQUIRED));
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_VERIFY_CA"), INT2NUM(SSL_MODE_VERIFY_CA));
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_VERIFY_IDENTITY"), INT2NUM(SSL_MODE_VERIFY_IDENTITY));
+#else
+#ifdef HAVE_CONST_MYSQL_OPT_SSL_VERIFY_SERVER_CERT // MySQL 5.7.3 - 5.7.10 & MariaDB 10.x and later
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_VERIFY_IDENTITY"), INT2NUM(SSL_MODE_VERIFY_IDENTITY));
+#endif
+#ifdef HAVE_CONST_MYSQL_OPT_SSL_ENFORCE // MySQL 5.7.3 - 5.7.10 & MariaDB 10.x and later
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_DISABLED"), INT2NUM(SSL_MODE_DISABLED));
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_REQUIRED"), INT2NUM(SSL_MODE_REQUIRED));
+#endif
+#endif
+
+#ifndef HAVE_CONST_SSL_MODE_DISABLED
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_DISABLED"), INT2NUM(0));
+#endif
+#ifndef HAVE_CONST_SSL_MODE_PREFERRED
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_PREFERRED"), INT2NUM(0));
+#endif
+#ifndef HAVE_CONST_SSL_MODE_REQUIRED
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_REQUIRED"), INT2NUM(0));
+#endif
+#ifndef HAVE_CONST_SSL_MODE_VERIFY_CA
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_VERIFY_CA"), INT2NUM(0));
+#endif
+#ifndef HAVE_CONST_SSL_MODE_VERIFY_IDENTITY
+  rb_const_set(cMysql2Client, rb_intern("SSL_MODE_VERIFY_IDENTITY"), INT2NUM(0));
 #endif
 }
